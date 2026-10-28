@@ -21,6 +21,7 @@ Controls
     0 / Home     back to real time (live)
     O            set your location (city name or coordinates)
     ? / F1       show / hide the controls list
+    U            hide / show the whole interface (satellites and labels stay)
     L            labels
     N F G C      day/night, coverage footprint, ground track, close approaches
     W            cycle weather overlay
@@ -304,6 +305,7 @@ class SatelliteTracker:
         self.follow_zoom = 1.0
         self.labels_visible = False
         self.controls_open = settings.load_setting("show_controls", True) is not False
+        self.ui_hidden = False
         self.label_slots = []
         self.last_label_refresh = 0.0
         self.running = True
@@ -666,9 +668,9 @@ class SatelliteTracker:
         for key, action, text in [("track", "Track satellite", "Click"), ("search", "Search", "/  or  Ctrl+F"),
                                   ("next", "Next satellite", "Tab"), ("home", "Release, home view", "Esc"),
                                   ("pause", "Pause / resume", ""), ("speed", "Simulation speed", "Left / Right"),
-                                  ("live", "Back to real time", "0  or  Home"),
+                                  ("live", "Back to real time", "0  or  Home"), ("ui", "Hide interface", "U"),
                                   ("labels", "Labels", ""), ("view", "Rotate / zoom", "Drag / Scroll")]:
-            clickable = key in ("search", "next", "home", "pause", "live", "labels")
+            clickable = key in ("search", "next", "home", "pause", "live", "ui", "labels")
             self.help_values[key] = self.help_panel.add_field(action, 11, value_color=ACCENT,
                                                               key=f"action:{key}" if clickable else None)
             self.help_values[key].SetInput(text)
@@ -702,6 +704,9 @@ class SatelliteTracker:
         self.clickable_panels = [self.search_panel, self.approach_panel, self.clock_panel, self.legend_panel,
                                  self.layers_panel, self.location_panel, self.help_panel]
         self.ui_panels = self.clickable_panels + [self.title_panel, self.track_panel, self.idle_panel]
+        # Always shown unless the interface is hidden (nothing else turns these back on)
+        self.fixed_panels = [self.title_panel, self.search_panel, self.clock_panel, self.legend_panel,
+                             self.layers_panel, self.location_panel]
 
         self._refresh_search()
         self._refresh_controls()
@@ -799,6 +804,7 @@ class SatelliteTracker:
         key(["Home", "0"], self.go_live)
         key(["o", "O"], self.open_location)
         key(["F1", "question"], self.toggle_controls)
+        key(["u", "U"], self.toggle_interface)
 
         iren.add_observer("KeyPressEvent", self._on_search_key)
         iren.add_observer("KeyPressEvent", self._on_location_key)
@@ -853,6 +859,8 @@ class SatelliteTracker:
     def open_search(self):
         if self.search_active:
             return
+        if self.ui_hidden:
+            self.toggle_interface()
         self.search_active = True
         self.search_query = ""
         self._run_search()
@@ -953,6 +961,8 @@ class SatelliteTracker:
         return self.search_active or self.location_active
 
     def open_location(self, from_key=True):
+        if self.ui_hidden:
+            self.toggle_interface()
         self.location_active = True
         self.location_skip_key = from_key   # the O press that opened the box also reaches _on_location_key
         self.location_query = ""
@@ -1190,7 +1200,8 @@ class SatelliteTracker:
             self.last_text_update = 0.0
         elif kind == "action":
             {"search": self.open_search, "next": lambda: self.select_next(1), "home": self.release,
-             "pause": self.toggle_pause, "live": self.go_live, "labels": self.toggle_labels}[arg]()
+             "pause": self.toggle_pause, "live": self.go_live, "ui": self.toggle_interface,
+             "labels": self.toggle_labels}[arg]()
 
     def select(self, index, keep_watch=False):
         if not keep_watch:
@@ -1244,6 +1255,16 @@ class SatelliteTracker:
         self._refresh_controls()
         self.last_text_update = 0.0
         self.show_toast(f"Simulation speed  {SPEEDS[self.speed_index]:,}×")
+
+    def toggle_interface(self):
+        """Hide every panel, leaving the 3D view (satellites, orbits, labels) on its own."""
+        self.ui_hidden = not self.ui_hidden
+        if not self.ui_hidden:
+            for panel in self.fixed_panels:
+                panel.set_visible(True)
+        self.last_text_update = 0.0
+        self.last_label_refresh = 0.0
+        self.show_toast("Interface hidden  ·  U to show" if self.ui_hidden else "Interface shown")
 
     def toggle_controls(self):
         self.controls_open = not self.controls_open
@@ -1991,6 +2012,12 @@ class SatelliteTracker:
         w, h = self.ren.GetSize()
         margin, gap = scaled(20), scaled(10)
 
+        self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
+        if self.ui_hidden:
+            for panel in self.ui_panels + [self.tooltip]:
+                panel.set_visible(False)
+            return
+
         # Left column: title, search, close approaches; tracking card at the bottom
         self.title_panel.layout(margin, h - margin, 0, 1)
         self.search_panel.layout(margin, self.title_panel.box[1] - gap, 0, 1)
@@ -2020,7 +2047,6 @@ class SatelliteTracker:
                 break
         else:
             self.help_panel.set_visible(False)
-        self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
         if self.mouse is not None and self.tooltip.visible:
             self.tooltip.layout(self.mouse[0] + scaled(18), self.mouse[1] - scaled(18), 0, 1, clamp_to=(w, h))
 
