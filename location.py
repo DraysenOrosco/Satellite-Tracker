@@ -35,7 +35,7 @@ def format_coordinates(lat, lon):
 
 
 def parse_coordinates(text):
-    """'21.31, -157.86' (or '21.31 -157.86') -> Location, or None if not a valid pair."""
+    """'51.51, -0.13' (or '51.51 -0.13') -> Location, or None if not a valid pair."""
     match = COORDINATES.match(text)
     if not match:
         return None

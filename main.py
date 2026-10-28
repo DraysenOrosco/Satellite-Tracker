@@ -785,7 +785,7 @@ class SatelliteTracker:
             row["label"].SetInput(truncate(name, 28))
             self.location_value.SetInput(coordinates)
         self.location_hint.SetInput(self.location_status or
-                                    "City name, or coordinates like 21.31, -157.86  ·  Enter set  ·  Esc cancel")
+                                    "City name, or coordinates like 51.51, -0.13  ·  Enter set  ·  Esc cancel")
 
     def show_toast(self, message, color=TEXT):
         self.toast_text.SetInput(message)
@@ -1024,7 +1024,7 @@ class SatelliteTracker:
             self.set_observer(parsed)
             return
         if self.offline:
-            self.location_status = "Offline: type coordinates instead, e.g. 21.31, -157.86"
+            self.location_status = "Offline: type coordinates instead, e.g. 51.51, -0.13"
         else:
             self.location_status = f"Looking up “{truncate(query, 30)}”..."
             self.geocoder.lookup(query)
@@ -2101,7 +2101,7 @@ def parse_args():
     parser.add_argument("--ui-scale", type=float, metavar="SCALE",
                         help="size of text and controls, e.g. 1.25 (default: the display scaling)")
     parser.add_argument("--location", nargs=2, type=float, metavar=("LAT", "LON"),
-                        help="your location for pass predictions, e.g. 21.31 -157.86 (saved for next time)")
+                        help="your location for pass predictions, e.g. 51.51 -0.13 (saved for next time)")
     return parser.parse_args()
 
 
