@@ -55,6 +55,8 @@ DEFAULT_SPEED_INDEX = 2
 TRACK_SAMPLES = 240
 MAX_EXTRAPOLATION_S = 60          # re-run SGP4 for everything after this much simulated time
 TARGET_FPS = 60
+WINDOW_SIZE = (1440, 900)
+SCREEN_FILL = 0.85                # largest share of the screen the window takes at startup
 HOVER_RADIUS_PX = 10
 CAMERA_TRANSITION_S = 1.2
 MAX_LABELS = 60
@@ -326,7 +328,9 @@ class SatelliteTracker:
         self.weather = weather.WeatherService(offline=offline)
         self.weather_mode = "off"
 
-        self.pl = pv.Plotter(window_size=(1440, 900), off_screen=off_screen)
+        self.pl = pv.Plotter(window_size=WINDOW_SIZE, off_screen=off_screen)
+        if not off_screen:
+            self._fit_window_to_screen()
         self.pl.set_background(BACKGROUND)
         self.ren = self.pl.renderer
 
@@ -340,6 +344,20 @@ class SatelliteTracker:
             (0.0, 0.0, 1.0),
         ]
         self.pl.camera_position = self.home_camera
+
+    def _fit_window_to_screen(self):
+        """Shrink the window to fit smaller screens (keeping its shape), and centre it.
+
+        At full size it is taller than e.g. a 1080p screen at 125% scaling, which puts the
+        bottom panels behind the taskbar.
+        """
+        screen_w, screen_h = self.pl.render_window.GetScreenSize()
+        if not screen_w or not screen_h:
+            return
+        scale = min(1.0, SCREEN_FILL * screen_w / WINDOW_SIZE[0], SCREEN_FILL * screen_h / WINDOW_SIZE[1])
+        w, h = round(WINDOW_SIZE[0] * scale), round(WINDOW_SIZE[1] * scale)
+        self.pl.window_size = (w, h)
+        self.pl.render_window.SetPosition((screen_w - w) // 2, (screen_h - h) // 3)
 
     def static(self, index):
         if index not in self._static_cache:
