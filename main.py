@@ -40,6 +40,7 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 import conjunctions
 import weather
 from data import CATEGORIES, DEFAULT_GROUPS, load_catalog, orbital_period_minutes
+from passes import sun_direction
 from ui import (ACCENT, BACKGROUND, DISABLED, FONT_MONO, FONT_REGULAR, FONT_SEMIBOLD, MUTED, TEXT,
                 WARNING, Panel, enable_hidpi, make_text, scaled, set_scale, set_text_color)
 
@@ -94,23 +95,6 @@ VTK_CURSOR_HAND = 9
 def sgp4_time(t):
     """Julian date split (whole, fraction) the same way Skyfield feeds SGP4 (UTC-based)."""
     return t.whole, t.tai_fraction - t._leap_seconds() / 86400.0
-
-
-def sun_direction(t):
-    """Unit vector to the Sun in the equator-of-date frame (close enough to TEME).
-
-    Low-precision formula from the Astronomical Almanac, good to about 0.01 degrees,
-    which avoids downloading a planetary ephemeris.
-    """
-    n = t.tt - 2451545.0
-    mean_longitude = np.radians((280.460 + 0.9856474 * n) % 360)
-    mean_anomaly = np.radians((357.528 + 0.9856003 * n) % 360)
-    ecliptic_longitude = (mean_longitude + np.radians(1.915) * np.sin(mean_anomaly)
-                          + np.radians(0.020) * np.sin(2 * mean_anomaly))
-    obliquity = np.radians(23.439 - 0.0000004 * n)
-    return np.array([np.cos(ecliptic_longitude),
-                     np.cos(obliquity) * np.sin(ecliptic_longitude),
-                     np.sin(obliquity) * np.sin(ecliptic_longitude)])
 
 
 def static_info(sat):
