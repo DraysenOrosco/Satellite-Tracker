@@ -52,6 +52,7 @@ MU_KM3_S2 = 398600.4418
 SPEEDS = [1, 10, 60, 300, 1000, 3000]
 DEFAULT_SPEED_INDEX = 2
 TRACK_SAMPLES = 240
+MAX_EXTRAPOLATION_S = 60          # re-run SGP4 for everything after this much simulated time
 TARGET_FPS = 60
 HOVER_RADIUS_PX = 10
 CAMERA_TRANSITION_S = 1.2
@@ -267,6 +268,7 @@ class SatelliteTracker:
         self.periods_days = np.array([orbital_period_minutes(sat) for sat in self.satellites]) / 1440.0
         self.sat_array = SatrecArray([sat.model for sat in self.satellites])
         self._static_cache = {}
+        self.base_tt = None   # time of the last full SGP4 run, see _update_positions()
 
         # Simulation clock (Terrestrial Time, Julian days)
         self.sim_tt = ts.now().tt
@@ -417,7 +419,7 @@ class SatelliteTracker:
 
         # Satellite markers: one point cloud per category (own size and visibility). Colours
         # are per point so satellites in Earth's shadow can be dimmed.
-        self.positions, self.velocities, self.valid = self._propagate(self.sim_time())
+        self.positions, self.velocities = self._update_positions(self.sim_time())
         self.category_meshes = {}
         self.category_actors = {}
         for key, (_, color, size, _) in CATEGORIES.items():
@@ -986,13 +988,44 @@ class SatelliteTracker:
         return self.ts.tt_jd(self.sim_tt)
 
     def _propagate(self, t):
-        """All satellites at once with vectorised SGP4. Positions in scene units, TEME frame."""
+        """All satellites at once with vectorised SGP4. Positions in km, TEME frame."""
         jd, fraction = sgp4_time(t)
         errors, r, v = self.sat_array.sgp4(np.array([jd]), np.array([fraction]))
-        positions = r[:, 0, :] * self.scale
+        positions = r[:, 0, :]
         valid = (errors[:, 0] == 0) & np.isfinite(positions).all(axis=1)
         positions[~valid] = 0.0  # decayed / failed: parked at the centre, hidden inside the Earth
         return positions, v[:, 0, :], valid
+
+    def _update_positions(self, t):
+        """Positions (scene units) and velocities (km/s) of every satellite at t.
+
+        Full SGP4 for ~20k objects costs ~10 ms, so it only runs once the clock has moved
+        MAX_EXTRAPOLATION_S since the last run. In between, orbits are extrapolated with
+        velocity and two-body gravity (under 0.5 km of error after 60 s). Objects whose
+        numbers are on screen (tracked satellite, watched pair) are always exact.
+        """
+        dt = None if self.base_tt is None else (t.tt - self.base_tt) * 86400.0
+        if dt is None or abs(dt) > MAX_EXTRAPOLATION_S:
+            self.base_r, self.base_v, self.valid = self._propagate(t)
+            self.base_tt, dt = t.tt, 0.0
+
+        r, v = self.base_r, self.base_v.copy()
+        if dt:
+            # Invalid objects are parked at the origin; the floor keeps them there
+            r3 = np.maximum(np.einsum("ij,ij->i", r, r), 1.0) ** 1.5
+            accel = -MU_KM3_S2 * r / r3[:, None]
+            r = r + v * dt + 0.5 * accel * dt * dt
+            v += accel * dt
+        positions = r * self.scale
+
+        exact = {self.selected} | ({self.watch["i"], self.watch["j"]} if self.watch else set())
+        jd, fraction = sgp4_time(t)
+        for index in exact - {None}:
+            error, r_exact, v_exact = self.satellites[index].model.sgp4(jd, fraction)
+            if error == 0:
+                positions[index] = np.array(r_exact) * self.scale
+                v[index] = v_exact
+        return positions, v
 
     def _track(self, index):
         if index not in self.tracks:
@@ -1324,7 +1357,7 @@ class SatelliteTracker:
             self.sim_tt += dt * SPEEDS[self.speed_index] / 86400.0
 
         t = self.sim_time()
-        self.positions, self.velocities, self.valid = self._propagate(t)
+        self.positions, self.velocities = self._update_positions(t)
         for key, (mesh, _, _, _) in self.category_meshes.items():
             mesh.points = self.positions[self.category_members[key]]
 
