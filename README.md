@@ -31,6 +31,8 @@ python main.py --location 21.31 -157.86 # your location (latitude, longitude), s
 
 Press O (or click the Your Location panel) and type a city name or coordinates such as `21.31, -157.86`. City names are looked up with [OpenStreetMap](https://www.openstreetmap.org/copyright)'s Nominatim service (© OpenStreetMap contributors); coordinates work offline. The location is saved in `settings.json` next to the app and shown as a white dot on the globe.
 
+With a location set, the panel lists the tracked satellite's passes over the next 10 days in your local time: when it rises, the direction it rises and sets in, and how high it climbs. Passes marked VISIBLE are the ones you can see with the naked eye: the satellite is in sunlight while your sky is dark. Click a pass to jump the clock to it. Times further out can shift by minutes as the satellite's orbit is updated.
+
 Orbital elements are downloaded in OMM (CSV) format, because new objects now have catalogue numbers too large for TLEs. They're cached in `tle_cache/` for 2 hours, since CelesTrak temporarily blocks clients that download the same data more often than that. Weather images are cached in `weather_cache/` for 30 minutes.
 
 ## Controls

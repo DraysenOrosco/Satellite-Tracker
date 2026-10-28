@@ -29,6 +29,7 @@ Controls
 import argparse
 import math
 import time
+from datetime import datetime
 
 import numpy as np
 import pyvista as pv
@@ -40,6 +41,7 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
 import conjunctions
 import location
+import passes
 import weather
 from data import CATEGORIES, DEFAULT_GROUPS, load_catalog, orbital_period_minutes
 from passes import sun_direction
@@ -86,6 +88,10 @@ MAX_APPROACH_ROWS = 6
 ALERT_MISS_KM = 1.0                # approaches drawn as 3D alerts while they happen
 ALERT_WINDOW_S = 120
 TRACKED_ALERT_LEAD_S = 600         # warn about the tracked satellite's approaches this early
+
+MAX_PASS_ROWS = 5
+PASS_WATCH_LEAD_S = 60             # clicking a pass jumps this far ahead of its rise
+PASS_WATCH_SPEED_INDEX = 1         # ... and plays it at 10x
 
 VTK_CURSOR_DEFAULT = 0
 VTK_CURSOR_HAND = 9
@@ -146,7 +152,23 @@ def format_age(seconds):
 
 def format_duration(seconds):
     minutes = int(abs(seconds) // 60)
+    if minutes >= 1440:
+        return f"{minutes // 1440}d {minutes % 1440 // 60:02d}h"
     return f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
+def format_local(t):
+    """A skyfield Time in this computer's time zone, e.g. 'Sat 01 Nov  18:52'."""
+    return t.utc_datetime().astimezone().strftime("%a %d %b  %H:%M")
+
+
+def utc_offset_label():
+    hours = datetime.now().astimezone().utcoffset().total_seconds() / 3600
+    return "UTC" if hours == 0 else f"UTC{hours:+g}"
+
+
+def compass(azimuth):
+    return ("N", "NE", "E", "SE", "S", "SW", "W", "NW")[round(azimuth / 45) % 8]
 
 
 def format_eta(seconds):
@@ -322,6 +344,13 @@ class SatelliteTracker:
         self.location_skip_key = False
         self.location_query = ""
         self.location_status = ""
+
+        # Passes of the tracked satellite over the observer (see passes.py)
+        self.pass_finder = passes.PassFinder()
+        self.passes = None          # {"key", "start_tt", "list", "always_up"}: the latest finished search
+        self.pass_request = None    # (key, start_tt) of the latest search started
+        self.visible_passes_only = True
+        self.pass_rows = []
 
         self.pl = pv.Plotter(window_size=[round(scaled(v)) for v in WINDOW_SIZE], off_screen=off_screen)
         if not off_screen:
@@ -584,6 +613,20 @@ class SatelliteTracker:
                                                             key="location:edit")
         self.location_input = self.location_panel.add_text(14, TEXT, FONT_MONO)
         self.location_hint = self.location_panel.add_text(10, MUTED, FONT_REGULAR)
+        self.location_panel.add_gap(8)
+        self.pass_header = self.location_panel.add_text(
+            10, MUTED, FONT_SEMIBOLD,
+            f"PASSES  ·  NEXT {passes.SEARCH_DAYS:g} DAYS  ·  LOCAL TIME ({utc_offset_label()})")
+        self.pass_status = self.location_panel.add_text(11, TEXT, FONT_REGULAR)
+        self.location_panel.add_gap(2)
+        self.pass_values = [
+            self.location_panel.add_field("", 11, glyph_color=ACCENT, value_color=TEXT, key=f"pass:{k}")
+            for k in range(MAX_PASS_ROWS)]
+        self.location_panel.add_gap(4)
+        self.pass_filter = self.location_panel.add_field("Only visible passes", 10, value_color=ACCENT,
+                                                         key="pass-filter")
+        self.pass_hint = self.location_panel.add_text(10, MUTED, FONT_REGULAR,
+                                                      "Click a pass to watch it  ·  later times may shift by minutes")
 
         # Tracking card (bottom-left)
         self.track_panel = Panel(ren, accent=ACCENT, min_width=330)
@@ -594,7 +637,7 @@ class SatelliteTracker:
         self.track_fields = {}
         for key, label in [("latitude", "Latitude"), ("longitude", "Longitude"), ("altitude", "Altitude"),
                            ("velocity", "Velocity"), ("light", "Illumination"), ("coverage", "Coverage radius"),
-                           (None, None), ("norad", "NORAD ID"), ("cospar", "COSPAR ID"),
+                           ("next_pass", "Next visible pass"), (None, None), ("norad", "NORAD ID"), ("cospar", "COSPAR ID"),
                            ("inclination", "Inclination"), ("period", "Period"), ("perigee", "Perigee"),
                            ("apogee", "Apogee"), ("epoch", "Elements epoch (UTC)"), (None, None),
                            ("approach", "Next close approach"), ("approach_with", "With"),
@@ -683,6 +726,7 @@ class SatelliteTracker:
         if self.paused:
             set_text_color(self.help_values["pause"], WARNING)
         on_off(self.approach_filter, "", self.hide_starlink_pairs)
+        on_off(self.pass_filter, "", self.visible_passes_only)
 
     def _refresh_legend(self):
         for key, (_, color, _, _) in CATEGORIES.items():
@@ -975,6 +1019,112 @@ class SatelliteTracker:
         self._refresh_location()
         self.show_toast(f"Location set: {observer.name}")
 
+    # ---- passes over the observer ------------------------------------------------------
+    def _pass_window_ok(self, start_tt):
+        """Whether a search started at start_tt still covers the clock (with a day to spare)."""
+        return start_tt - 1 / 1440 <= self.sim_tt <= start_tt + passes.SEARCH_DAYS - 1
+
+    def _current_passes(self):
+        """The finished search for the tracked satellite and current location, or None."""
+        if self.observer is None or self.selected is None or self.passes is None:
+            return None
+        key = (self.selected, self.observer.lat, self.observer.lon)
+        return self.passes if self.passes["key"] == key else None
+
+    def _update_passes(self):
+        """Keep the tracked satellite's passes current; searches run in the background."""
+        result = self.pass_finder.poll()
+        if result is not None:
+            key, start_tt, found, always_up = result
+            self.passes = {"key": key, "start_tt": start_tt, "list": found, "always_up": always_up}
+            self.last_text_update = 0.0
+
+        if self.observer is None or self.selected is None:
+            return
+        key = (self.selected, self.observer.lat, self.observer.lon)
+        current = self._current_passes()
+        if current is not None and self._pass_window_ok(current["start_tt"]):
+            return
+        if self.pass_request and self.pass_request[0] == key and self._pass_window_ok(self.pass_request[1]):
+            return  # already searching
+        self.pass_request = (key, self.sim_tt)
+        observer = wgs84.latlon(self.observer.lat, self.observer.lon)
+        self.pass_finder.request(key, self.catalog.records[self.selected], observer, self.sim_tt)
+
+    def _update_pass_panel(self):
+        panel = self.location_panel
+        shown = self.observer is not None
+        for row in (self.pass_header, self.pass_status, self.pass_hint, "pass-filter"):
+            panel.set_row_visible(row, shown)
+
+        rows, status = [], ""
+        current = self._current_passes()
+        name = truncate(self.names[self.selected], 24) if self.selected is not None else ""
+        if not shown:
+            pass
+        elif self.selected is None:
+            status = "Track a satellite to see its passes"
+        elif current is None:
+            status = f"Calculating passes of {name}..."
+        elif current["list"] is None:
+            status = "Pass search failed"
+        elif current["always_up"]:
+            status = f"{name} is always above your horizon"
+        else:
+            upcoming = [p for p in current["list"] if p.set_tt > self.sim_tt]
+            visible = [p for p in upcoming if p.visible]
+            rows = (visible if self.visible_passes_only else upcoming)[:MAX_PASS_ROWS]
+            if not upcoming:
+                status = f"Never rises above {passes.MIN_ELEVATION_DEG:g}° here"
+            elif self.visible_passes_only and not visible:
+                status = f"No visible passes  ·  {len(upcoming)} in daylight or Earth's shadow"
+            else:
+                status = f"{len(visible)} visible of {len(upcoming)} passes  ·  {name}"
+        self.pass_status.SetInput(status)
+
+        self.pass_rows = rows
+        for k, value in enumerate(self.pass_values):
+            key = f"pass:{k}"
+            if k >= len(rows):
+                panel.set_row_visible(key, False)
+                continue
+            p = rows[k]
+            row = panel.field(key)
+            row["label"].SetInput(f"{format_local(self.ts.tt_jd(p.rise_tt))}   "
+                                  f"{compass(p.rise_azimuth)} → {compass(p.set_azimuth)}")
+            value.SetInput(f"{p.max_elevation:.0f}°  VISIBLE" if p.visible else f"{p.max_elevation:.0f}°")
+            row["glyph"].set_color(ACCENT if p.visible else DISABLED)
+            panel.set_row_visible(key, True)
+
+    def _next_visible_pass_text(self):
+        current = self._current_passes()
+        if current is None:
+            return "calculating..."
+        if current["list"] is None:
+            return "—"
+        if current["always_up"]:
+            return "always above horizon"
+        p = next((p for p in current["list"] if p.visible and p.set_tt > self.sim_tt), None)
+        if p is None:
+            return f"none in {passes.SEARCH_DAYS:g} days"
+        when = "now" if p.rise_tt <= self.sim_tt else format_eta((p.rise_tt - self.sim_tt) * 86400)
+        return f"{when}  ·  {p.max_elevation:.0f}°"
+
+    def watch_pass(self, row):
+        """Jump the clock to just before a pass rises and play it at 10x."""
+        if row >= len(self.pass_rows):
+            return
+        p = self.pass_rows[row]
+        self.sim_tt = p.rise_tt - PASS_WATCH_LEAD_S / 86400.0
+        self.live = False
+        self.paused = False
+        self.speed_index = PASS_WATCH_SPEED_INDEX
+        self.watch = None
+        self._refresh_controls()
+        self.last_text_update = 0.0
+        self.show_toast(f"Pass: rises {format_local(self.ts.tt_jd(p.rise_tt))} in the {compass(p.rise_azimuth)}"
+                        f"  ·  max {p.max_elevation:.0f}°")
+
     # ---- actions -------------------------------------------------------------------
     def click(self, x, y):
         if self.search_active and not self.search_panel.contains(x, y):
@@ -1020,6 +1170,12 @@ class SatelliteTracker:
             self.go_live()
         elif kind == "location":
             self.open_location(from_key=False)
+        elif kind == "pass":
+            self.watch_pass(int(arg))
+        elif kind == "pass-filter":
+            self.visible_passes_only = not self.visible_passes_only
+            self._refresh_controls()
+            self.last_text_update = 0.0
         elif kind == "approach-filter":
             self.hide_starlink_pairs = not self.hide_starlink_pairs
             self._refresh_controls()
@@ -1543,6 +1699,7 @@ class SatelliteTracker:
         self._update_sunlight(now)
         self._update_weather()
         self._update_location()
+        self._update_passes()
         self._update_screening()
         self._update_camera()
 
@@ -1724,6 +1881,7 @@ class SatelliteTracker:
             self.weather_status["clouds"].SetInput("Live clouds & rain from weather satellites")
 
         self._update_approach_panel()
+        self._update_pass_panel()
 
         tracking = self.selected is not None
         self.track_panel.set_visible(tracking)
@@ -1741,6 +1899,9 @@ class SatelliteTracker:
                         "inclination", "period", "perigee", "apogee", "epoch"):
                 self.track_fields[key].SetInput(info[key])
             set_text_color(self.track_fields["light"], TEXT if self.sunlit[index] else MUTED)
+            self.track_panel.set_row_visible(self.track_fields["next_pass"], self.observer is not None)
+            if self.observer is not None:
+                self.track_fields["next_pass"].SetInput(self._next_visible_pass_text())
 
             next_approach = self._next_approach(index) if self.events is not None else None
             if self.watch and self.watch["i"] == index:
@@ -1832,7 +1993,10 @@ class SatelliteTracker:
         self.legend_panel.layout(w - margin, h - margin, 1, 1)
         self.layers_panel.layout(w - margin, self.legend_panel.box[1] - gap, 1, 1)
         self.location_panel.layout(w - margin, self.layers_panel.box[1] - gap, 1, 1)
+        self.help_panel.set_visible(True)
         self.help_panel.layout(w - margin, margin, 1, 0)
+        if self.location_panel.box[1] < self.help_panel.box[1] + self.help_panel.box[3] + gap:
+            self.help_panel.set_visible(False)  # not enough room this frame
         self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
         if self.mouse is not None and self.tooltip.visible:
             self.tooltip.layout(self.mouse[0] + scaled(18), self.mouse[1] - scaled(18), 0, 1, clamp_to=(w, h))

@@ -9,14 +9,19 @@ Sun direction and cylindrical Earth shadow as the 3D view, so no planetary ephem
 has to be downloaded.
 """
 
+import queue
+import threading
 from dataclasses import dataclass
 
 import numpy as np
+from skyfield.api import EarthSatellite, load
+
+from data import make_satrec
 
 EARTH_RADIUS_KM = 6371.0
 MIN_ELEVATION_DEG = 10.0
 DARK_SUN_ELEVATION_DEG = -6.0     # end of civil twilight
-SEARCH_DAYS = 2.0
+SEARCH_DAYS = 10.0                # a satellite can go days without a visible pass
 SAMPLES_PER_PASS = 60
 
 
@@ -96,3 +101,43 @@ def _describe(sat, observer, ts, rise_tt, set_tt):
 
     return Pass(rise_tt, float(t.tt[peak]), set_tt, float(elevation.degrees[peak]),
                 float(azimuth.degrees[0]), float(azimuth.degrees[-1]), bool(visible.any()))
+
+
+class PassFinder:
+    """Runs find_passes() on a background thread (about 0.1 s for 10 days of ISS passes).
+
+    Each search builds its own SGP4 model from the source elements: a Satrec keeps
+    scratch state while propagating, so it can't be shared with the render loop.
+    """
+
+    def __init__(self):
+        self.ts = load.timescale()
+        self.results = queue.Queue()
+        self.latest = None
+
+    def request(self, key, record, observer, start_tt):
+        self.latest = key
+        threading.Thread(target=self._worker, args=(key, record, observer, start_tt), daemon=True).start()
+
+    def poll(self):
+        """(key, start_tt, passes, always_up) once the latest request has finished, otherwise None.
+
+        passes is None if the search failed. Results of older requests are dropped.
+        """
+        found = None
+        while True:
+            try:
+                result = self.results.get_nowait()
+            except queue.Empty:
+                return found
+            if result[0] == self.latest:
+                found = result
+
+    def _worker(self, key, record, observer, start_tt):
+        try:
+            sat = EarthSatellite.from_satrec(make_satrec(record), self.ts)
+            found, always_up = find_passes(sat, observer, self.ts, start_tt)
+        except Exception as exc:  # report and keep the app running
+            print(f"Pass search failed: {type(exc).__name__}: {exc}")
+            found, always_up = None, False
+        self.results.put((key, start_tt, found, always_up))
