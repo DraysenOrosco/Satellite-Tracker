@@ -31,6 +31,39 @@ CHIP_COLOR = "#152033"
 CHIP_HOVER_COLOR = "#1f2e47"
 
 
+# -----------------------------------------------------------------------------
+# Display scale
+# -----------------------------------------------------------------------------
+UI_SCALE = 1.0
+
+
+def enable_hidpi():
+    """Opt in to sharp rendering on scaled Windows displays; returns the display scale (1.5 at 150%).
+
+    Without it, Windows renders the app at a lower resolution and stretches it, which blurs
+    text and lines. Must run before the first window opens. Other platforms: 1.0.
+    """
+    if os.name != "nt":
+        return 1.0
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
+        return ctypes.windll.user32.GetDpiForSystem() / 96.0
+    except (AttributeError, OSError):
+        return 1.0
+
+
+def set_scale(scale):
+    """Set the UI scale. Call before building any UI."""
+    global UI_SCALE
+    UI_SCALE = scale
+
+
+def scaled(value):
+    """A size in pixels at 100% display scaling, in device pixels."""
+    return value * UI_SCALE
+
+
 def _font(*names):
     font_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
     for name in names:
@@ -56,7 +89,7 @@ _line_height_cache = {}
 def make_text(renderer, size, color=TEXT, font=FONT_REGULAR, justify="left", text=""):
     actor = vtkTextActor()
     prop = actor.GetTextProperty()
-    prop.SetFontSize(size)
+    prop.SetFontSize(round(scaled(size)))
     prop.SetColor(pv.Color(color).float_rgb)
     if font in BUILTIN_FONTS:
         family, bold = BUILTIN_FONTS[font]
@@ -222,7 +255,10 @@ class Panel:
         # Created before any row so row text draws on top of it
         self.highlight = Rect(renderer, HOVER_COLOR)
         self.highlight.set_visible(False)
-        self.min_width = min_width
+        self.min_width = scaled(min_width)
+        # Spacing in device pixels (the class constants are sizes at 100% scaling)
+        for name in ("PAD_X", "PAD_Y", "ROW_GAP", "COL_GAP", "CHIP_PAD_X", "CHIP_PAD_Y", "CHIP_GAP"):
+            setattr(self, name, scaled(getattr(type(self), name)))
         self.rows = []
         self.visible = True
         self.box = (0, 0, 0, 0)
@@ -236,7 +272,7 @@ class Panel:
         return actor
 
     def add_field(self, label, size=12, glyph_color=None, value_color=TEXT, value_font=FONT_MONO, key=None):
-        glyph = Dot(self.renderer, glyph_color, round(size * 0.6)) if glyph_color else None
+        glyph = Dot(self.renderer, glyph_color, round(scaled(size * 0.6))) if glyph_color else None
         label_actor = make_text(self.renderer, size, TEXT if glyph or key else MUTED, FONT_REGULAR, text=label)
         value = make_text(self.renderer, size, value_color, value_font, justify="right")
         self.rows.append({"kind": "field", "glyph": glyph, "label": label_actor, "value": value, "key": key})
@@ -336,7 +372,7 @@ class Panel:
             if kind == "text":
                 w, h = text_size(ren, row["actor"])
             elif kind == "field":
-                glyph_w = row["glyph"].diameter + 8 if row["glyph"] else 0
+                glyph_w = row["glyph"].diameter + scaled(8) if row["glyph"] else 0
                 label_w, h = text_size(ren, row["label"])
                 label_col = max(label_col, glyph_w + label_w)
                 value_col = max(value_col, text_size(ren, row["value"])[0])
@@ -358,17 +394,18 @@ class Panel:
         y0 = round(y - anchor_y * height)
         if clamp_to:
             win_w, win_h = clamp_to
-            x0 = min(max(x0, 8), win_w - width - 8)
-            y0 = min(max(y0, 8), win_h - height - 8)
+            edge = scaled(8)
+            x0 = round(min(max(x0, edge), win_w - width - edge))
+            y0 = round(min(max(y0, edge), win_h - height - edge))
 
         self.box = (x0, y0, width, height)
         self.background.place(x0, y0, width, height)
         self.border.place(x0, y0, width, height)
         if self.accent:
-            self.accent.place(x0, y0, 3, height)
+            self.accent.place(x0, y0, round(scaled(3)), height)
 
-        left = x0 + self.PAD_X
-        right = x0 + width - self.PAD_X
+        left = round(x0 + self.PAD_X)
+        right = round(x0 + width - self.PAD_X)
         cursor = y0 + height - self.PAD_Y
         self.row_boxes = {}
         for row, (w, h) in zip(rows, measured):
@@ -382,11 +419,12 @@ class Panel:
                 label_x = left
                 if row["glyph"]:
                     row["glyph"].place(left, round(cursor + (h - row["glyph"].diameter) / 2))
-                    label_x += row["glyph"].diameter + 8
+                    label_x += row["glyph"].diameter + scaled(8)
                 row["label"].SetDisplayPosition(round(label_x), round(cursor))
                 row["value"].SetDisplayPosition(round(right), round(cursor))
                 if row["key"] is not None:
-                    self.row_boxes[row["key"]] = (x0 + 4, cursor - 2, width - 8, h + 4)
+                    inset, grow = scaled(4), scaled(2)
+                    self.row_boxes[row["key"]] = (x0 + inset, cursor - grow, width - 2 * inset, h + 2 * grow)
             elif kind == "chips":
                 chip_x = left
                 for chip in row["chips"]:

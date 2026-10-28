@@ -23,6 +23,7 @@ pip install -r requirements.txt
 python main.py                          # everything
 python main.py --groups stations visual # a lighter set (any CelesTrak group names)
 python main.py --offline                # no downloads: use cached data, or the bundled stations.tle
+python main.py --ui-scale 1.25          # text and controls size (default: your display scaling)
 ```
 
 Orbital elements are downloaded in OMM (CSV) format, because new objects now have catalogue numbers too large for TLEs. They're cached in `tle_cache/` for 2 hours, since CelesTrak temporarily blocks clients that download the same data more often than that. Weather images are cached in `weather_cache/` for 30 minutes.

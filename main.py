@@ -41,7 +41,7 @@ import conjunctions
 import weather
 from data import CATEGORIES, DEFAULT_GROUPS, load_catalog, orbital_period_minutes
 from ui import (ACCENT, BACKGROUND, DISABLED, FONT_MONO, FONT_REGULAR, FONT_SEMIBOLD, MUTED, TEXT,
-                WARNING, Panel, make_text, set_text_color)
+                WARNING, Panel, enable_hidpi, make_text, scaled, set_scale, set_text_color)
 
 
 # -----------------------------------------------------------------------------
@@ -236,10 +236,10 @@ def add_colored(plotter, mesh, array, point_size=None, spheres=False, line_width
     prop.SetLighting(lighting)
     if point_size:
         prop.SetRepresentationToPoints()
-        prop.SetPointSize(point_size)
+        prop.SetPointSize(scaled(point_size))
         prop.SetRenderPointsAsSpheres(spheres)
     if line_width:
-        prop.SetLineWidth(line_width)
+        prop.SetLineWidth(scaled(line_width))
     plotter.renderer.AddActor(actor)
     return actor
 
@@ -328,7 +328,7 @@ class SatelliteTracker:
         self.weather = weather.WeatherService(offline=offline)
         self.weather_mode = "off"
 
-        self.pl = pv.Plotter(window_size=WINDOW_SIZE, off_screen=off_screen)
+        self.pl = pv.Plotter(window_size=[round(scaled(v)) for v in WINDOW_SIZE], off_screen=off_screen)
         if not off_screen:
             self._fit_window_to_screen()
         self.pl.set_background(BACKGROUND)
@@ -354,8 +354,9 @@ class SatelliteTracker:
         screen_w, screen_h = self.pl.render_window.GetScreenSize()
         if not screen_w or not screen_h:
             return
-        scale = min(1.0, SCREEN_FILL * screen_w / WINDOW_SIZE[0], SCREEN_FILL * screen_h / WINDOW_SIZE[1])
-        w, h = round(WINDOW_SIZE[0] * scale), round(WINDOW_SIZE[1] * scale)
+        full_w, full_h = scaled(WINDOW_SIZE[0]), scaled(WINDOW_SIZE[1])
+        scale = min(1.0, SCREEN_FILL * screen_w / full_w, SCREEN_FILL * screen_h / full_h)
+        w, h = round(full_w * scale), round(full_h * scale)
         self.pl.window_size = (w, h)
         self.pl.render_window.SetPosition((screen_w - w) // 2, (screen_h - h) // 3)
 
@@ -422,7 +423,7 @@ class SatelliteTracker:
         self.footprint_actor = pl.add_mesh(self.footprint_mesh, color=ACCENT, opacity=0.16, lighting=False,
                                            pickable=False)
         self.horizon_mesh = make_polyline(np.zeros((segments + 1, 3)))
-        self.horizon_actor = pl.add_mesh(self.horizon_mesh, color=ACCENT, line_width=1.5, opacity=0.85,
+        self.horizon_actor = pl.add_mesh(self.horizon_mesh, color=ACCENT, line_width=scaled(1.5), opacity=0.85,
                                          lighting=False, pickable=False)
         for actor in (self.footprint_actor, self.horizon_actor):
             actor.SetVisibility(False)
@@ -436,9 +437,9 @@ class SatelliteTracker:
 
         # Star field, far outside the orbits
         star_radius = self.R * 60
-        pl.add_points(random_sphere_points(5000, star_radius), color="#8090b0", point_size=1.5,
+        pl.add_points(random_sphere_points(5000, star_radius), color="#8090b0", point_size=scaled(1.5),
                       opacity=0.6, lighting=False, pickable=False)
-        pl.add_points(random_sphere_points(500, star_radius), color="white", point_size=2.5,
+        pl.add_points(random_sphere_points(500, star_radius), color="white", point_size=scaled(2.5),
                       opacity=0.9, lighting=False, pickable=False)
 
         # Satellite markers: one point cloud per category (own size and visibility). Colours
@@ -462,28 +463,30 @@ class SatelliteTracker:
 
         # Hover and selection markers
         self.hover_mesh = pv.PolyData(np.zeros((1, 3)))
-        self.hover_actor = pl.add_mesh(self.hover_mesh, color="white", style="points", point_size=20,
+        self.hover_actor = pl.add_mesh(self.hover_mesh, color="white", style="points", point_size=scaled(20),
                                        render_points_as_spheres=True, opacity=0.35, pickable=False)
         self.hover_actor.SetVisibility(False)
 
         self.select_mesh = pv.PolyData(np.zeros((1, 3)))
-        self.select_actor = pl.add_mesh(self.select_mesh, color=ACCENT, style="points", point_size=26,
+        self.select_actor = pl.add_mesh(self.select_mesh, color=ACCENT, style="points", point_size=scaled(26),
                                         render_points_as_spheres=True, opacity=0.45, pickable=False)
         self.select_actor.SetVisibility(False)
 
         # Line from the selected satellite straight down to the ground
         self.nadir_mesh = make_polyline(np.zeros((2, 3)))
-        self.nadir_actor = pl.add_mesh(self.nadir_mesh, color=ACCENT, line_width=1.5, opacity=0.6, pickable=False)
+        self.nadir_actor = pl.add_mesh(self.nadir_mesh, color=ACCENT, line_width=scaled(1.5), opacity=0.6,
+                                       pickable=False)
         self.nadir_actor.SetVisibility(False)
 
         # Close-approach alerts: rings on objects in an approach right now, and a line
         # joining the pair being watched
         self.alert_mesh = pv.PolyData(np.zeros((1, 3)))
-        self.alert_actor = pl.add_mesh(self.alert_mesh, color=WARNING, style="points", point_size=18,
+        self.alert_actor = pl.add_mesh(self.alert_mesh, color=WARNING, style="points", point_size=scaled(18),
                                        render_points_as_spheres=True, opacity=0.55, pickable=False)
         self.alert_actor.SetVisibility(False)
         self.pair_mesh = make_polyline(np.zeros((2, 3)))
-        self.pair_actor = pl.add_mesh(self.pair_mesh, color=WARNING, line_width=2, opacity=0.9, pickable=False)
+        self.pair_actor = pl.add_mesh(self.pair_mesh, color=WARNING, line_width=scaled(2), opacity=0.9,
+                                      pickable=False)
         self.pair_actor.SetVisibility(False)
 
         pl.enable_anti_aliasing("msaa")
@@ -736,7 +739,7 @@ class SatelliteTracker:
         px, py = self.press_pos
         self.press_pos = None
         # Only a click if the mouse barely moved; otherwise it was a rotate-drag
-        if abs(x - px) > 4 or abs(y - py) > 4:
+        if abs(x - px) > scaled(4) or abs(y - py) > scaled(4):
             return
         self.click(x, y)
 
@@ -1121,7 +1124,7 @@ class SatelliteTracker:
                 alpha *= 0.18
             track.rgba[:, 3] = (alpha * 255).astype(np.uint8)
             track.vtk_rgba.Modified()
-            track.actor.GetProperty().SetLineWidth(3.0 if emphasised else 1.5)
+            track.actor.GetProperty().SetLineWidth(scaled(3.0 if emphasised else 1.5))
 
     def _update_sunlight(self, now):
         """Night-side shading and which satellites are in Earth's shadow."""
@@ -1331,12 +1334,12 @@ class SatelliteTracker:
         screen, visible = self.screen_positions
         dist = np.hypot(screen[:, 0] - x, screen[:, 1] - y)
         dist[~visible] = np.inf
-        dist[dist > HOVER_RADIUS_PX] = np.inf
+        dist[dist > scaled(HOVER_RADIUS_PX)] = np.inf
         # Among everything under the cursor, favour important types (a station over a Starlink)
         index = int(np.argmin(dist + 2.0 * self.priority))
         if not np.isfinite(dist[index]):
             return None, []
-        near = np.hypot(screen[:, 0] - screen[index, 0], screen[:, 1] - screen[index, 1]) < 3
+        near = np.hypot(screen[:, 0] - screen[index, 0], screen[:, 1] - screen[index, 1]) < scaled(3)
         return index, np.flatnonzero(near & visible).tolist()
 
     # ---- camera ----------------------------------------------------------------------
@@ -1461,7 +1464,7 @@ class SatelliteTracker:
             p = self.positions[self.selected]
             self.select_mesh.points = p.reshape(1, 3)
             self.nadir_mesh.points = np.array([p, normalize(p) * self.R])
-            self.select_actor.GetProperty().SetPointSize(24 + 6 * math.sin(now * 4.0))
+            self.select_actor.GetProperty().SetPointSize(scaled(24 + 6 * math.sin(now * 4.0)))
 
         if self.hover_index is not None and self.hover_index != self.selected:
             self.hover_mesh.points = self.positions[self.hover_index].reshape(1, 3)
@@ -1500,7 +1503,7 @@ class SatelliteTracker:
                      (p.box for p in self.ui_panels + [self.toast] if p.visible)]
             for i in candidates:
                 x, y = screen[i]
-                box = (x + 10, y + 4, x + 14 + 6.3 * len(self.names[i]), y + 20)
+                box = (x + scaled(10), y + scaled(4), x + scaled(14 + 6.3 * len(self.names[i])), y + scaled(20))
                 if box[2] > w or box[3] > h:
                     continue
                 if any(box[0] < b[2] and b[0] < box[2] and box[1] < b[3] and b[1] < box[3] for b in boxes):
@@ -1522,7 +1525,7 @@ class SatelliteTracker:
             label.SetInput(self.names[i])
             watched = self.watch is not None and i == self.watch["j"]
             set_text_color(label, ACCENT if i == self.selected else WARNING if watched else TEXT)
-            label.SetDisplayPosition(round(screen[i][0] + 12), round(screen[i][1] + 6))
+            label.SetDisplayPosition(round(screen[i][0] + scaled(12)), round(screen[i][1] + scaled(6)))
             label.SetVisibility(True)
 
     def _update_hover(self):
@@ -1682,7 +1685,7 @@ class SatelliteTracker:
 
     def _layout(self):
         w, h = self.ren.GetSize()
-        margin, gap = 20, 10
+        margin, gap = scaled(20), scaled(10)
 
         # Left column: title, search, close approaches; tracking card at the bottom
         self.title_panel.layout(margin, h - margin, 0, 1)
@@ -1702,9 +1705,9 @@ class SatelliteTracker:
         self.legend_panel.layout(w - margin, h - margin, 1, 1)
         self.layers_panel.layout(w - margin, self.legend_panel.box[1] - gap, 1, 1)
         self.help_panel.layout(w - margin, margin, 1, 0)
-        self.toast.layout(w / 2, margin + 40, 0.5, 0)
+        self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
         if self.mouse is not None and self.tooltip.visible:
-            self.tooltip.layout(self.mouse[0] + 18, self.mouse[1] - 18, 0, 1, clamp_to=(w, h))
+            self.tooltip.layout(self.mouse[0] + scaled(18), self.mouse[1] - scaled(18), 0, 1, clamp_to=(w, h))
 
     # ---- main loop -------------------------------------------------------------------
     def run(self):
@@ -1733,6 +1736,8 @@ def parse_args():
                              f"(default: {' '.join(DEFAULT_GROUPS)})")
     parser.add_argument("--offline", action="store_true",
                         help="don't download anything; use cached or bundled data only")
+    parser.add_argument("--ui-scale", type=float, metavar="SCALE",
+                        help="size of text and controls, e.g. 1.25 (default: the display scaling)")
     return parser.parse_args()
 
 
@@ -1741,6 +1746,8 @@ if __name__ == "__main__":
     if not accelerated:
         print("Warning: sgp4 is running without its C extension, so the app will be very slow "
               "(about 2 FPS). Use Python 3.13; see the README.")
+    display_scale = enable_hidpi()
+    set_scale(args.ui_scale or display_scale)
     timescale = load.timescale()
     catalog = load_catalog(timescale, args.groups, offline=args.offline)
     SatelliteTracker(catalog, timescale, offline=args.offline).run()
