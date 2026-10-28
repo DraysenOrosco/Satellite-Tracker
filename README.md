@@ -14,8 +14,12 @@ A 3D satellite tracker built with PyVista. It shows about 19,000 objects from Ce
 
 ## Run
 
+Use Python 3.13. On 3.14, sgp4 installs without its fast C extension and the app runs at about 2 FPS.
+
 ```
-pip install pyvista skyfield sgp4 numpy pillow
+py -3.13 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 python main.py                          # everything
 python main.py --groups stations visual # a lighter set (any CelesTrak group names)
 python main.py --offline                # no downloads: use cached data, or the bundled stations.tle

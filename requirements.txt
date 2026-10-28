@@ -1,0 +1,7 @@
+# Use Python 3.13. sgp4 has no compiled build for 3.14 on Windows yet; there pip installs
+# a pure-Python fallback that makes the app ~30x slower (main.py warns at startup).
+numpy>=2.5
+pillow>=13.0
+pyvista>=0.49
+sgp4>=2.27
+skyfield>=1.55

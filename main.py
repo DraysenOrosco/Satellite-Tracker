@@ -31,7 +31,7 @@ import time
 import numpy as np
 import pyvista as pv
 from pyvista import examples
-from sgp4.api import SatrecArray
+from sgp4.api import SatrecArray, accelerated
 from skyfield.api import load, wgs84
 
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
@@ -1652,6 +1652,9 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
+    if not accelerated:
+        print("Warning: sgp4 is running without its C extension, so the app will be very slow "
+              "(about 2 FPS). Use Python 3.13; see the README.")
     timescale = load.timescale()
     catalog = load_catalog(timescale, args.groups, offline=args.offline)
     SatelliteTracker(catalog, timescale, offline=args.offline).run()
