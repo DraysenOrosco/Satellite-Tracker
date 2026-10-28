@@ -18,6 +18,7 @@ Controls
     Esc / H      release target and return to the home view
     Space        pause / resume
     Left/Right   slower / faster simulation
+    0 / Home     back to real time (live)
     L            labels
     N F G C      day/night, coverage footprint, ground track, close approaches
     W            cycle weather overlay
@@ -155,11 +156,15 @@ def format_age(seconds):
     return f"{seconds / 86400:.0f} days ago"
 
 
+def format_duration(seconds):
+    minutes = int(abs(seconds) // 60)
+    return f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+
+
 def format_eta(seconds):
     if abs(seconds) < 60:
         return "now"
-    minutes = int(abs(seconds) // 60)
-    text = f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+    text = format_duration(seconds)
     return f"in {text}" if seconds > 0 else f"{text} ago"
 
 
@@ -274,6 +279,7 @@ class SatelliteTracker:
         self.sim_tt = ts.now().tt
         self.speed_index = DEFAULT_SPEED_INDEX
         self.paused = False
+        self.live = False      # clock follows the wall clock exactly (see go_live)
         self.last_wall = time.monotonic()
 
         # Interaction state
@@ -507,7 +513,8 @@ class SatelliteTracker:
         self.clock_text = self.clock_panel.add_text(20, TEXT, FONT_MONO)
         self.clock_panel.add_gap(4)
         self.speed_chips = self.clock_panel.add_chips(
-            ["PAUSE"] + [f"{s:,}×" for s in SPEEDS], keys=["pause"] + [f"speed:{i}" for i in range(len(SPEEDS))])
+            ["PAUSE"] + [f"{s:,}×" for s in SPEEDS] + ["LIVE"],
+            keys=["pause"] + [f"speed:{i}" for i in range(len(SPEEDS))] + ["live"])
 
         # Legend (top-right) - rows toggle categories
         self.legend_panel = Panel(ren)
@@ -570,8 +577,9 @@ class SatelliteTracker:
         for key, action, text in [("track", "Track satellite", "Click"), ("search", "Search", "/  or  Ctrl+F"),
                                   ("next", "Next satellite", "Tab"), ("home", "Release, home view", "Esc"),
                                   ("pause", "Pause / resume", ""), ("speed", "Simulation speed", "Left / Right"),
+                                  ("live", "Back to real time", "0  or  Home"),
                                   ("labels", "Labels", ""), ("view", "Rotate / zoom", "Drag / Scroll")]:
-            clickable = key in ("search", "next", "home", "pause", "labels")
+            clickable = key in ("search", "next", "home", "pause", "live", "labels")
             self.help_values[key] = self.help_panel.add_field(action, 11, value_color=ACCENT,
                                                               key=f"action:{key}" if clickable else None)
             self.help_values[key].SetInput(text)
@@ -613,8 +621,9 @@ class SatelliteTracker:
     def _refresh_controls(self):
         self.speed_chips[0].text.SetInput("PLAY" if self.paused else "PAUSE")
         self.speed_chips[0].set_active(self.paused, WARNING)
-        for i, chip in enumerate(self.speed_chips[1:]):
-            chip.set_active(i == self.speed_index)
+        for i, chip in enumerate(self.speed_chips[1:-1]):
+            chip.set_active(i == self.speed_index and not self.live)
+        self.speed_chips[-1].set_active(self.live)
 
         for chip in self.weather_chips:
             chip.set_active(chip.key == f"weather:{self.weather_mode}")
@@ -677,6 +686,7 @@ class SatelliteTracker:
         key(["g", "G"], lambda: self.toggle_layer("groundtrack"))
         key(["c", "C"], lambda: self.toggle_layer("approaches"))
         key(["slash"], self.open_search)
+        key(["Home", "0"], self.go_live)
 
         iren.add_observer("KeyPressEvent", self._on_search_key)
         iren.add_observer("MouseMoveEvent", self._on_mouse_move)
@@ -847,6 +857,7 @@ class SatelliteTracker:
         if kind == "pause":
             self.toggle_pause()
         elif kind == "speed":
+            self.live = False
             self.speed_index = int(arg)
             self._refresh_controls()
             self.show_toast(f"Simulation speed  {SPEEDS[self.speed_index]:,}×")
@@ -862,13 +873,15 @@ class SatelliteTracker:
             self.choose_search_result(int(arg))
         elif kind == "approach":
             self.watch_approach(int(arg))
+        elif kind == "live":
+            self.go_live()
         elif kind == "approach-filter":
             self.hide_starlink_pairs = not self.hide_starlink_pairs
             self._refresh_controls()
             self.last_text_update = 0.0
         elif kind == "action":
             {"search": self.open_search, "next": lambda: self.select_next(1), "home": self.release,
-             "pause": self.toggle_pause, "labels": self.toggle_labels}[arg]()
+             "pause": self.toggle_pause, "live": self.go_live, "labels": self.toggle_labels}[arg]()
 
     def select(self, index, keep_watch=False):
         if not keep_watch:
@@ -910,12 +923,14 @@ class SatelliteTracker:
         self.last_label_refresh = 0.0
 
     def toggle_pause(self):
+        self.live = False
         self.paused = not self.paused
         self._refresh_controls()
         self.last_text_update = 0.0
         self.show_toast("Paused" if self.paused else "Resumed")
 
     def change_speed(self, step):
+        self.live = False
         self.speed_index = min(max(self.speed_index + step, 0), len(SPEEDS) - 1)
         self._refresh_controls()
         self.last_text_update = 0.0
@@ -972,6 +987,7 @@ class SatelliteTracker:
         # Arrive 30 s early at real-time speed: at ~10 km/s relative speed the encounter
         # itself only lasts a few seconds
         self.sim_tt = tca - 30 / 86400.0
+        self.live = False
         self.speed_index = 0
         self.paused = False
         self._refresh_controls()
@@ -979,6 +995,16 @@ class SatelliteTracker:
         self.select(i, keep_watch=True)
         clock = self.ts.tt_jd(tca).utc_strftime("%H:%M:%S")
         self.show_toast(f"Watching {self.names[i]} × {self.names[j]}  ·  {miss:.2f} km at {clock} UTC", WARNING)
+
+    def go_live(self):
+        """Back to the real current time at 1x, e.g. after watching an approach hours ahead."""
+        self.live = True
+        self.paused = False
+        self.speed_index = 0
+        self.watch = None
+        self._refresh_controls()
+        self.last_text_update = 0.0
+        self.show_toast("Live  ·  real time")
 
     def stop(self):
         self.running = False
@@ -1353,7 +1379,9 @@ class SatelliteTracker:
         now = time.monotonic()
         dt = min(now - self.last_wall, 0.25)  # don't jump after the window was blocked
         self.last_wall = now
-        if not self.paused:
+        if self.live:
+            self.sim_tt = self.ts.now().tt
+        elif not self.paused:
             self.sim_tt += dt * SPEEDS[self.speed_index] / 86400.0
 
         t = self.sim_time()
@@ -1516,8 +1544,15 @@ class SatelliteTracker:
         if self.paused:
             self.clock_status.SetInput("SIMULATION  ·  PAUSED")
             set_text_color(self.clock_status, WARNING)
+        elif self.live:
+            self.clock_status.SetInput("LIVE  ·  REAL TIME")
+            set_text_color(self.clock_status, ACCENT)
         else:
-            self.clock_status.SetInput(f"SIMULATION  ·  {speed:,}× REAL TIME")
+            status = f"SIMULATION  ·  {speed:,}× REAL TIME"
+            offset = (self.sim_tt - self.ts.now().tt) * 86400.0
+            if abs(offset) >= 60:
+                status += f"  ·  {format_duration(offset).upper()} {'AHEAD' if offset > 0 else 'BEHIND'}"
+            self.clock_status.SetInput(status)
             set_text_color(self.clock_status, MUTED)
         self.clock_text.SetInput(t.utc_strftime("%Y-%m-%d  %H:%M:%S") + " UTC")
 

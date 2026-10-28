@@ -37,6 +37,7 @@ Orbital elements are downloaded in OMM (CSV) format, because new objects now hav
 | Release target, home view | Esc or H |
 | Pause / resume | Space |
 | Simulation speed | Left / Right, or the speed buttons |
+| Back to real time (live) | 0 or Home, or the LIVE button |
 | Labels | L |
 | Day/night, footprint, ground track, close approaches | N, F, G, C (or click in Map Layers) |
 | Weather overlay (Off / Clouds / Rain / Both) | W, or the weather buttons |
