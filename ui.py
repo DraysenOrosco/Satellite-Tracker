@@ -5,10 +5,11 @@ Everything here is drawn as VTK 2D actors in pixel coordinates. Panels size them
 to their content and are re-laid out every frame, so they follow window resizes.
 """
 
+import math
 import os
 
 import pyvista as pv
-from vtkmodules.vtkCommonCore import VTK_FONT_FILE, vtkPoints
+from vtkmodules.vtkCommonCore import VTK_ARIAL, VTK_COURIER, VTK_FONT_FILE, vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D, vtkTextActor
 
@@ -39,10 +40,11 @@ def _font(*names):
     return None
 
 
-FONT_REGULAR = _font("segoeui.ttf")
-FONT_SEMIBOLD = _font("seguisb.ttf", "segoeuib.ttf")
-FONT_MONO = _font("consola.ttf")
-FONT_SYMBOL = _font("seguisym.ttf")
+# Without the Windows fonts (macOS, Linux), fall back to VTK's built-in faces
+FONT_REGULAR = _font("segoeui.ttf") or "arial"
+FONT_SEMIBOLD = _font("seguisb.ttf", "segoeuib.ttf") or "arial-bold"
+FONT_MONO = _font("consola.ttf") or "courier"
+BUILTIN_FONTS = {"arial": (VTK_ARIAL, False), "arial-bold": (VTK_ARIAL, True), "courier": (VTK_COURIER, False)}
 
 
 # -----------------------------------------------------------------------------
@@ -56,11 +58,13 @@ def make_text(renderer, size, color=TEXT, font=FONT_REGULAR, justify="left", tex
     prop = actor.GetTextProperty()
     prop.SetFontSize(size)
     prop.SetColor(pv.Color(color).float_rgb)
-    if font:
+    if font in BUILTIN_FONTS:
+        family, bold = BUILTIN_FONTS[font]
+        prop.SetFontFamily(family)
+        prop.SetBold(bold)
+    else:
         prop.SetFontFamily(VTK_FONT_FILE)
         prop.SetFontFile(font)
-    else:
-        prop.SetFontFamilyToArial()
     {"left": prop.SetJustificationToLeft,
      "center": prop.SetJustificationToCentered,
      "right": prop.SetJustificationToRight}[justify]()
@@ -77,7 +81,7 @@ def text_size(renderer, actor):
     actor.GetSize(renderer, size)
 
     prop = actor.GetTextProperty()
-    key = (prop.GetFontFile(), prop.GetFontSize())
+    key = (prop.GetFontFile(), prop.GetFontFamily(), prop.GetBold(), prop.GetFontSize())
     if key not in _line_height_cache:
         _line_height_cache[key] = size[1]
     return size[0], _line_height_cache[key]
@@ -97,12 +101,12 @@ class Rect:
     all text, so a translucent fill would cover text added before it.
     """
 
-    def __init__(self, renderer, color, opacity=1.0, outline=False):
+    def __init__(self, renderer, color, opacity=1.0, outline=False, corners=4):
         self.points = vtkPoints()
-        self.points.SetNumberOfPoints(4)
+        self.points.SetNumberOfPoints(corners)
 
         cells = vtkCellArray()
-        ids = (0, 1, 2, 3, 0) if outline else (0, 1, 2, 3)
+        ids = list(range(corners)) + ([0] if outline else [])
         cells.InsertNextCell(len(ids))
         for i in ids:
             cells.InsertCellPoint(i)
@@ -138,6 +142,23 @@ class Rect:
 
     def set_visible(self, visible):
         self.actor.SetVisibility(visible)
+
+
+class Dot(Rect):
+    """A filled circle, drawn as a shape: VTK's built-in font has no ● glyph."""
+
+    SEGMENTS = 16
+
+    def __init__(self, renderer, color, diameter):
+        self.diameter = diameter
+        super().__init__(renderer, color, corners=self.SEGMENTS)
+
+    def place(self, x, y, w=None, h=None):
+        r = self.diameter / 2
+        for i in range(self.SEGMENTS):
+            angle = 2 * math.pi * i / self.SEGMENTS
+            self.points.SetPoint(i, x + r + r * math.cos(angle), y + r + r * math.sin(angle), 0)
+        self.points.Modified()
 
 
 class Chip:
@@ -215,9 +236,7 @@ class Panel:
         return actor
 
     def add_field(self, label, size=12, glyph_color=None, value_color=TEXT, value_font=FONT_MONO, key=None):
-        glyph = None
-        if glyph_color:
-            glyph = make_text(self.renderer, size, glyph_color, FONT_SYMBOL or FONT_REGULAR, text="●")
+        glyph = Dot(self.renderer, glyph_color, round(size * 0.6)) if glyph_color else None
         label_actor = make_text(self.renderer, size, TEXT if glyph or key else MUTED, FONT_REGULAR, text=label)
         value = make_text(self.renderer, size, value_color, value_font, justify="right")
         self.rows.append({"kind": "field", "glyph": glyph, "label": label_actor, "value": value, "key": key})
@@ -242,7 +261,9 @@ class Panel:
         if row["kind"] == "text":
             yield row["actor"]
         elif row["kind"] == "field":
-            yield from (a for a in (row["glyph"], row["label"], row["value"]) if a is not None)
+            if row["glyph"]:
+                yield row["glyph"].actor
+            yield from (row["label"], row["value"])
         elif row["kind"] == "chips":
             for chip in row["chips"]:
                 yield chip.rect.actor
@@ -315,7 +336,7 @@ class Panel:
             if kind == "text":
                 w, h = text_size(ren, row["actor"])
             elif kind == "field":
-                glyph_w = text_size(ren, row["glyph"])[0] + 8 if row["glyph"] else 0
+                glyph_w = row["glyph"].diameter + 8 if row["glyph"] else 0
                 label_w, h = text_size(ren, row["label"])
                 label_col = max(label_col, glyph_w + label_w)
                 value_col = max(value_col, text_size(ren, row["value"])[0])
@@ -360,8 +381,8 @@ class Panel:
             elif kind == "field":
                 label_x = left
                 if row["glyph"]:
-                    row["glyph"].SetDisplayPosition(left, round(cursor))
-                    label_x += text_size(ren, row["glyph"])[0] + 8
+                    row["glyph"].place(left, round(cursor + (h - row["glyph"].diameter) / 2))
+                    label_x += row["glyph"].diameter + 8
                 row["label"].SetDisplayPosition(round(label_x), round(cursor))
                 row["value"].SetDisplayPosition(round(right), round(cursor))
                 if row["key"] is not None:

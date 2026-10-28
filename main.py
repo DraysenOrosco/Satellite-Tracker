@@ -645,7 +645,7 @@ class SatelliteTracker:
         for key, (_, color, _, _) in CATEGORIES.items():
             row = self.legend_panel.field(f"category:{key}")
             shown = self.category_visible[key]
-            set_text_color(row["glyph"], color if shown else DISABLED)
+            row["glyph"].set_color(color if shown else DISABLED)
             set_text_color(row["label"], TEXT if shown else DISABLED)
             set_text_color(row["value"], MUTED if shown else DISABLED)
             if key in self.category_actors:
@@ -804,7 +804,7 @@ class SatelliteTracker:
                 row = panel.field(key)
                 row["label"].SetInput(truncate(self.names[i], 30))
                 value.SetInput(f"{self.norad[i]}  ·  {truncate(CATEGORIES[self.categories[i]][0], 18)}")
-                set_text_color(row["glyph"], CATEGORIES[self.categories[i]][1])
+                row["glyph"].set_color(CATEGORIES[self.categories[i]][1])
                 panel.set_row_visible(key, True)
             else:
                 panel.set_row_visible(key, False)
@@ -1657,7 +1657,7 @@ class SatelliteTracker:
                 row = self.approach_panel.field(key)
                 row["label"].SetInput(truncate(f"{self.names[i]} × {self.names[j]}", 40))
                 value.SetInput(f"{miss:5.2f} km  {format_eta((self.events['tca'][e] - self.sim_tt) * 86400):>10}")
-                set_text_color(row["glyph"], "#f87171" if miss < ALERT_MISS_KM else WARNING)
+                row["glyph"].set_color("#f87171" if miss < ALERT_MISS_KM else WARNING)
                 self.approach_panel.set_row_visible(key, True)
             else:
                 self.approach_panel.set_row_visible(key, False)
