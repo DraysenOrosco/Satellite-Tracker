@@ -255,6 +255,22 @@ def add_colored(plotter, mesh, array, point_size=None, spheres=False, line_width
     return actor
 
 
+def sphere_points_supported():
+    """Whether this GPU driver draws VTK's sphere-shaded points.
+
+    Some drivers (seen on an AMD Radeon with a 2022 driver) draw nothing at all for
+    render_points_as_spheres, which made every satellite invisible. Probe once with a
+    tiny off-screen render (~0.1 s); the app falls back to plain square points.
+    """
+    pl = pv.Plotter(off_screen=True, window_size=(16, 16))
+    pl.set_background("black")
+    pl.add_points(pv.PolyData([[0.0, 0.0, 0.0]]), color="white", point_size=8, render_points_as_spheres=True)
+    pl.camera_position = [(0, 0, 5), (0, 0, 0), (0, 1, 0)]
+    image = pl.screenshot(return_img=True)
+    pl.close()
+    return bool((image.max(axis=2) > 100).any())
+
+
 class Track:
     """One sampled orbit for a satellite; only the fade (alpha) slides along it each frame."""
 
@@ -356,6 +372,11 @@ class SatelliteTracker:
         self.pass_request = None    # (key, start_tt) of the latest search started
         self.visible_passes_only = True
         self.pass_rows = []
+
+        self.point_spheres = sphere_points_supported()
+        if not self.point_spheres:
+            print("Note: this graphics driver can't draw round points, so satellites are drawn as squares. "
+                  "Updating the GPU driver may fix this.")
 
         self.pl = pv.Plotter(window_size=[round(scaled(v)) for v in WINDOW_SIZE], off_screen=off_screen)
         if not off_screen:
@@ -482,7 +503,7 @@ class SatelliteTracker:
                 continue
             mesh = pv.PolyData(self.positions[members])
             mesh["rgb"] = np.tile(np.array(pv.Color(color).int_rgb, dtype=np.uint8), (len(members), 1))
-            actor = add_colored(pl, mesh, "rgb", point_size=size, spheres=True, lighting=True)
+            actor = add_colored(pl, mesh, "rgb", point_size=size, spheres=self.point_spheres, lighting=True)
             self.category_meshes[key] = (mesh, mesh["rgb"], mesh.GetPointData().GetArray("rgb"),
                                          np.array(pv.Color(color).int_rgb, dtype=np.float32))
             self.category_actors[key] = actor
@@ -493,12 +514,12 @@ class SatelliteTracker:
         # Hover and selection markers
         self.hover_mesh = pv.PolyData(np.zeros((1, 3)))
         self.hover_actor = pl.add_mesh(self.hover_mesh, color="white", style="points", point_size=scaled(20),
-                                       render_points_as_spheres=True, opacity=0.35, pickable=False)
+                                       render_points_as_spheres=self.point_spheres, opacity=0.35, pickable=False)
         self.hover_actor.SetVisibility(False)
 
         self.select_mesh = pv.PolyData(np.zeros((1, 3)))
         self.select_actor = pl.add_mesh(self.select_mesh, color=ACCENT, style="points", point_size=scaled(26),
-                                        render_points_as_spheres=True, opacity=0.45, pickable=False)
+                                        render_points_as_spheres=self.point_spheres, opacity=0.45, pickable=False)
         self.select_actor.SetVisibility(False)
 
         # Line from the selected satellite straight down to the ground
@@ -511,7 +532,7 @@ class SatelliteTracker:
         # joining the pair being watched
         self.alert_mesh = pv.PolyData(np.zeros((1, 3)))
         self.alert_actor = pl.add_mesh(self.alert_mesh, color=WARNING, style="points", point_size=scaled(18),
-                                       render_points_as_spheres=True, opacity=0.55, pickable=False)
+                                       render_points_as_spheres=self.point_spheres, opacity=0.55, pickable=False)
         self.alert_actor.SetVisibility(False)
         self.pair_mesh = make_polyline(np.zeros((2, 3)))
         self.pair_actor = pl.add_mesh(self.pair_mesh, color=WARNING, line_width=scaled(2), opacity=0.9,
@@ -521,7 +542,7 @@ class SatelliteTracker:
         # The observer's location on the ground, spun with the Earth
         self.observer_mesh = pv.PolyData(np.zeros((1, 3)))
         self.observer_actor = pl.add_mesh(self.observer_mesh, color="white", style="points", point_size=scaled(9),
-                                          render_points_as_spheres=True, pickable=False)
+                                          render_points_as_spheres=self.point_spheres, pickable=False)
         self.earth_actors.append(self.observer_actor)
         self._place_observer_marker()
 
