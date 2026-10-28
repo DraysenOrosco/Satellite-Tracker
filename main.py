@@ -20,6 +20,7 @@ Controls
     Left/Right   slower / faster simulation
     0 / Home     back to real time (live)
     O            set your location (city name or coordinates)
+    ? / F1       show / hide the controls list
     L            labels
     N F G C      day/night, coverage footprint, ground track, close approaches
     W            cycle weather overlay
@@ -42,6 +43,7 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 import conjunctions
 import location
 import passes
+import settings
 import weather
 from data import CATEGORIES, DEFAULT_GROUPS, load_catalog, orbital_period_minutes
 from passes import sun_direction
@@ -301,6 +303,7 @@ class SatelliteTracker:
         self.selected = None
         self.follow_zoom = 1.0
         self.labels_visible = False
+        self.controls_open = settings.load_setting("show_controls", True) is not False
         self.label_slots = []
         self.last_label_refresh = 0.0
         self.running = True
@@ -656,7 +659,8 @@ class SatelliteTracker:
 
         # Controls (bottom-right) - rows with an action are clickable too
         self.help_panel = Panel(ren)
-        self.help_panel.add_text(10, MUTED, FONT_SEMIBOLD, "CONTROLS")
+        self.help_toggle = self.help_panel.add_field("CONTROLS", 10, value_color=ACCENT, key="help-toggle")
+        set_text_color(self.help_panel.field("help-toggle")["label"], MUTED)
         self.help_panel.add_gap(2)
         self.help_values = {}
         for key, action, text in [("track", "Track satellite", "Click"), ("search", "Search", "/  or  Ctrl+F"),
@@ -721,6 +725,7 @@ class SatelliteTracker:
         for key, hotkey in (("night", "N"), ("footprint", "F"), ("groundtrack", "G"), ("approaches", "C")):
             on_off(self.layer_values[key], hotkey, self.layers[key])
         self.layers_panel.set_row_visible(self.night_note, self.layers["night"])
+        self.help_toggle.SetInput(f"?  or  F1  ·  {'HIDE' if self.controls_open else 'SHOW'}")
         on_off(self.help_values["labels"], "L", self.labels_visible)
         on_off(self.help_values["pause"], "Space", not self.paused, "RUNNING", "PAUSED")
         if self.paused:
@@ -793,6 +798,7 @@ class SatelliteTracker:
         key(["slash"], self.open_search)
         key(["Home", "0"], self.go_live)
         key(["o", "O"], self.open_location)
+        key(["F1", "question"], self.toggle_controls)
 
         iren.add_observer("KeyPressEvent", self._on_search_key)
         iren.add_observer("KeyPressEvent", self._on_location_key)
@@ -1172,6 +1178,8 @@ class SatelliteTracker:
             self.open_location(from_key=False)
         elif kind == "pass":
             self.watch_pass(int(arg))
+        elif kind == "help-toggle":
+            self.toggle_controls()
         elif kind == "pass-filter":
             self.visible_passes_only = not self.visible_passes_only
             self._refresh_controls()
@@ -1236,6 +1244,14 @@ class SatelliteTracker:
         self._refresh_controls()
         self.last_text_update = 0.0
         self.show_toast(f"Simulation speed  {SPEEDS[self.speed_index]:,}×")
+
+    def toggle_controls(self):
+        self.controls_open = not self.controls_open
+        try:
+            settings.save_setting("show_controls", self.controls_open)
+        except OSError as exc:
+            print(f"Could not save settings: {exc}")
+        self._refresh_controls()
 
     def toggle_labels(self):
         self.labels_visible = not self.labels_visible
@@ -1993,10 +2009,17 @@ class SatelliteTracker:
         self.legend_panel.layout(w - margin, h - margin, 1, 1)
         self.layers_panel.layout(w - margin, self.legend_panel.box[1] - gap, 1, 1)
         self.location_panel.layout(w - margin, self.layers_panel.box[1] - gap, 1, 1)
+        # Controls: collapsed to its title row when closed, or when there is no room this frame
         self.help_panel.set_visible(True)
-        self.help_panel.layout(w - margin, margin, 1, 0)
-        if self.location_panel.box[1] < self.help_panel.box[1] + self.help_panel.box[3] + gap:
-            self.help_panel.set_visible(False)  # not enough room this frame
+        overlaps = lambda: self.location_panel.box[1] < self.help_panel.box[1] + self.help_panel.box[3] + gap
+        for open_ in ([True, False] if self.controls_open else [False]):
+            for value in self.help_values.values():
+                self.help_panel.set_row_visible(value, open_)
+            self.help_panel.layout(w - margin, margin, 1, 0)
+            if not overlaps():
+                break
+        else:
+            self.help_panel.set_visible(False)
         self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
         if self.mouse is not None and self.tooltip.visible:
             self.tooltip.layout(self.mouse[0] + scaled(18), self.mouse[1] - scaled(18), 0, 1, clamp_to=(w, h))

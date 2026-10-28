@@ -8,7 +8,6 @@ the 3D view never freezes.
 """
 
 import json
-import os
 import queue
 import re
 import threading
@@ -17,8 +16,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
+import settings
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q={query}"
 USER_AGENT = "SatelliteTracker/1.0 (educational PyVista viewer)"
 COORDINATES = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*$")
@@ -46,31 +45,17 @@ def parse_coordinates(text):
     return Location(lat, lon, format_coordinates(lat, lon))
 
 
-def _read_settings():
-    try:
-        with open(SETTINGS_PATH, encoding="utf-8") as f:
-            settings = json.load(f)
-        return settings if isinstance(settings, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
 def load_location():
-    """The saved location, or None if there is none (or the file is unreadable)."""
+    """The saved location, or None if there is none (or it is unreadable)."""
     try:
-        data = _read_settings()["location"]
+        data = settings.load_setting("location")
         return Location(float(data["lat"]), float(data["lon"]), str(data["name"]))
     except (KeyError, TypeError, ValueError):
         return None
 
 
 def save_location(location):
-    settings = _read_settings()
-    settings["location"] = asdict(location)
-    tmp = SETTINGS_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-    os.replace(tmp, SETTINGS_PATH)
+    settings.save_setting("location", asdict(location))
 
 
 def place_name(display_name):
