@@ -2,3 +2,4 @@ __pycache__/
 tle_cache/
 weather_cache/
 .venv/
+settings.json

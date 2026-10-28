@@ -24,7 +24,12 @@ python main.py                          # everything
 python main.py --groups stations visual # a lighter set (any CelesTrak group names)
 python main.py --offline                # no downloads: use cached data, or the bundled stations.tle
 python main.py --ui-scale 1.25          # text and controls size (default: your display scaling)
+python main.py --location 21.31 -157.86 # your location (latitude, longitude), saved for next time
 ```
+
+## Your location
+
+Press O (or click the Your Location panel) and type a city name or coordinates such as `21.31, -157.86`. City names are looked up with [OpenStreetMap](https://www.openstreetmap.org/copyright)'s Nominatim service (© OpenStreetMap contributors); coordinates work offline. The location is saved in `settings.json` next to the app and shown as a white dot on the globe.
 
 Orbital elements are downloaded in OMM (CSV) format, because new objects now have catalogue numbers too large for TLEs. They're cached in `tle_cache/` for 2 hours, since CelesTrak temporarily blocks clients that download the same data more often than that. Weather images are cached in `weather_cache/` for 30 minutes.
 
@@ -39,6 +44,7 @@ Orbital elements are downloaded in OMM (CSV) format, because new objects now hav
 | Pause / resume | Space |
 | Simulation speed | Left / Right, or the speed buttons |
 | Back to real time (live) | 0 or Home, or the LIVE button |
+| Set your location | O, or click Your Location |
 | Labels | L |
 | Day/night, footprint, ground track, close approaches | N, F, G, C (or click in Map Layers) |
 | Weather overlay (Off / Clouds / Rain / Both) | W, or the weather buttons |

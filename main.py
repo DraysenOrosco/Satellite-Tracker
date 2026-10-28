@@ -19,6 +19,7 @@ Controls
     Space        pause / resume
     Left/Right   slower / faster simulation
     0 / Home     back to real time (live)
+    O            set your location (city name or coordinates)
     L            labels
     N F G C      day/night, coverage footprint, ground track, close approaches
     W            cycle weather overlay
@@ -38,6 +39,7 @@ from skyfield.api import load, wgs84
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 
 import conjunctions
+import location
 import weather
 from data import CATEGORIES, DEFAULT_GROUPS, load_catalog, orbital_period_minutes
 from passes import sun_direction
@@ -243,7 +245,7 @@ class Track:
 # Application
 # -----------------------------------------------------------------------------
 class SatelliteTracker:
-    def __init__(self, catalog, ts, off_screen=False, offline=False):
+    def __init__(self, catalog, ts, off_screen=False, offline=False, observer=None):
         self.catalog = catalog
         self.satellites = catalog.satellites
         self.ts = ts
@@ -311,6 +313,15 @@ class SatelliteTracker:
 
         self.weather = weather.WeatherService(offline=offline)
         self.weather_mode = "off"
+
+        # Observer on the ground (see location.py)
+        self.offline = offline
+        self.observer = observer
+        self.geocoder = location.Geocoder()
+        self.location_active = False
+        self.location_skip_key = False
+        self.location_query = ""
+        self.location_status = ""
 
         self.pl = pv.Plotter(window_size=[round(scaled(v)) for v in WINDOW_SIZE], off_screen=off_screen)
         if not off_screen:
@@ -473,7 +484,24 @@ class SatelliteTracker:
                                       pickable=False)
         self.pair_actor.SetVisibility(False)
 
+        # The observer's location on the ground, spun with the Earth
+        self.observer_mesh = pv.PolyData(np.zeros((1, 3)))
+        self.observer_actor = pl.add_mesh(self.observer_mesh, color="white", style="points", point_size=scaled(9),
+                                          render_points_as_spheres=True, pickable=False)
+        self.earth_actors.append(self.observer_actor)
+        self._place_observer_marker()
+
         pl.enable_anti_aliasing("msaa")
+
+    def _place_observer_marker(self):
+        """Earth-fixed position (x towards longitude 0, z north), just above the ground."""
+        if self.observer is None:
+            self.observer_actor.SetVisibility(False)
+            return
+        lat, lon = np.radians(self.observer.lat), np.radians(self.observer.lon)
+        up = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+        self.observer_mesh.points = (up * self.R * GROUND_TRACK_RADIUS).reshape(1, 3)
+        self.observer_actor.SetVisibility(True)
 
     # ---- UI --------------------------------------------------------------------
     def _build_ui(self):
@@ -548,6 +576,15 @@ class SatelliteTracker:
         self.layers_panel.add_gap(2)
         self.weather_status = {key: self.layers_panel.add_text(10, MUTED, FONT_REGULAR) for key in weather.LAYERS}
 
+        # Observer location (right, under the map layers)
+        self.location_panel = Panel(ren)
+        self.location_panel.add_text(10, MUTED, FONT_SEMIBOLD, "YOUR LOCATION  ·  O")
+        self.location_panel.add_gap(2)
+        self.location_value = self.location_panel.add_field("", 11, value_color=MUTED, value_font=FONT_REGULAR,
+                                                            key="location:edit")
+        self.location_input = self.location_panel.add_text(14, TEXT, FONT_MONO)
+        self.location_hint = self.location_panel.add_text(10, MUTED, FONT_REGULAR)
+
         # Tracking card (bottom-left)
         self.track_panel = Panel(ren, accent=ACCENT, min_width=330)
         self.track_panel.add_text(10, ACCENT, FONT_SEMIBOLD, "TRACKING")
@@ -616,12 +653,13 @@ class SatelliteTracker:
         self.tooltip.set_visible(False)
 
         self.clickable_panels = [self.search_panel, self.approach_panel, self.clock_panel, self.legend_panel,
-                                 self.layers_panel, self.help_panel]
+                                 self.layers_panel, self.location_panel, self.help_panel]
         self.ui_panels = self.clickable_panels + [self.title_panel, self.track_panel, self.idle_panel]
 
         self._refresh_search()
         self._refresh_controls()
         self._refresh_legend()
+        self._refresh_location()
 
     def _refresh_controls(self):
         self.speed_chips[0].text.SetInput("PLAY" if self.paused else "PAUSE")
@@ -656,6 +694,24 @@ class SatelliteTracker:
             if key in self.category_actors:
                 self.category_actors[key].SetVisibility(shown)
 
+    def _refresh_location(self):
+        panel, active = self.location_panel, self.location_active
+        panel.set_row_visible("location:edit", not active)
+        panel.set_row_visible(self.location_input, active)
+        panel.set_row_visible(self.location_hint, active)
+
+        row = panel.field("location:edit")
+        if self.observer is None:
+            row["label"].SetInput("Not set")
+            self.location_value.SetInput("click or press O")
+        else:
+            coordinates = location.format_coordinates(self.observer.lat, self.observer.lon)
+            name = self.observer.name if self.observer.name != coordinates else "Custom location"
+            row["label"].SetInput(truncate(name, 28))
+            self.location_value.SetInput(coordinates)
+        self.location_hint.SetInput(self.location_status or
+                                    "City name, or coordinates like 21.31, -157.86  ·  Enter set  ·  Esc cancel")
+
     def show_toast(self, message, color=TEXT):
         self.toast_text.SetInput(message)
         set_text_color(self.toast_text, color)
@@ -676,8 +732,8 @@ class SatelliteTracker:
 
         def key(names, callback):
             for name in names:
-                # Hotkeys are ignored while typing in the search box
-                self.pl.add_key_event(name, lambda cb=callback: None if self.search_active else cb())
+                # Hotkeys are ignored while typing in the search or location box
+                self.pl.add_key_event(name, lambda cb=callback: None if self.typing else cb())
 
         key(["Tab"], self._on_tab)
         key(["Escape", "h", "H"], self.release)
@@ -692,8 +748,10 @@ class SatelliteTracker:
         key(["c", "C"], lambda: self.toggle_layer("approaches"))
         key(["slash"], self.open_search)
         key(["Home", "0"], self.go_live)
+        key(["o", "O"], self.open_location)
 
         iren.add_observer("KeyPressEvent", self._on_search_key)
+        iren.add_observer("KeyPressEvent", self._on_location_key)
         iren.add_observer("MouseMoveEvent", self._on_mouse_move)
         iren.add_observer("LeaveEvent", self._on_leave)
         iren.add_observer("LeftButtonPressEvent", self._on_left_press)
@@ -839,10 +897,90 @@ class SatelliteTracker:
         self.select(index)
         self.show_toast(f"Tracking {self.names[index]}")
 
+    # ---- location ------------------------------------------------------------------
+    @property
+    def typing(self):
+        return self.search_active or self.location_active
+
+    def open_location(self, from_key=True):
+        self.location_active = True
+        self.location_skip_key = from_key   # the O press that opened the box also reaches _on_location_key
+        self.location_query = ""
+        self.location_status = ""
+        self._refresh_location()
+
+    def close_location(self):
+        self.location_active = False
+        self.location_status = ""
+        self._refresh_location()
+
+    def _on_location_key(self, *_):
+        if not self.location_active:
+            return
+        iren = self.pl.iren.interactor
+        sym, char = iren.GetKeySym(), iren.GetKeyCode()
+        if self.location_skip_key:
+            self.location_skip_key = False
+            if sym in ("o", "O"):
+                return
+
+        if sym == "Escape":
+            self.close_location()
+        elif sym in ("Return", "KP_Enter"):
+            self.submit_location()
+        elif sym == "BackSpace":
+            self.location_query = self.location_query[:-1]
+        elif char and len(char) == 1 and char.isprintable() and len(self.location_query) < 60:
+            self.location_query += char
+        self.last_text_update = 0.0
+
+    def submit_location(self):
+        query = self.location_query.strip()
+        if not query or self.geocoder.busy:
+            return
+        parsed = location.parse_coordinates(query)
+        if parsed:
+            self.set_observer(parsed)
+            return
+        if self.offline:
+            self.location_status = "Offline: type coordinates instead, e.g. 21.31, -157.86"
+        else:
+            self.location_status = f"Looking up “{truncate(query, 30)}”..."
+            self.geocoder.lookup(query)
+        self._refresh_location()
+
+    def _update_location(self):
+        result = self.geocoder.poll()
+        if result is None:
+            return
+        found, error = result
+        if found:
+            self.set_observer(found)
+            return
+        if error == "not found":
+            self.location_status = "Not found  ·  try another name, or coordinates"
+        else:
+            self.location_status = f"Lookup failed ({error})  ·  try coordinates"
+        self._refresh_location()
+
+    def set_observer(self, observer):
+        self.observer = observer
+        try:
+            location.save_location(observer)
+        except OSError as exc:
+            print(f"Could not save the location: {exc}")
+        self.location_active = False
+        self.location_status = ""
+        self._place_observer_marker()
+        self._refresh_location()
+        self.show_toast(f"Location set: {observer.name}")
+
     # ---- actions -------------------------------------------------------------------
     def click(self, x, y):
         if self.search_active and not self.search_panel.contains(x, y):
             self.close_search()
+        if self.location_active and not self.location_panel.contains(x, y):
+            self.close_location()
 
         for panel in self.clickable_panels:
             if panel.contains(x, y):
@@ -880,6 +1018,8 @@ class SatelliteTracker:
             self.watch_approach(int(arg))
         elif kind == "live":
             self.go_live()
+        elif kind == "location":
+            self.open_location(from_key=False)
         elif kind == "approach-filter":
             self.hide_starlink_pairs = not self.hide_starlink_pairs
             self._refresh_controls()
@@ -1402,6 +1542,7 @@ class SatelliteTracker:
         self.sun = sun_direction(t)
         self._update_sunlight(now)
         self._update_weather()
+        self._update_location()
         self._update_screening()
         self._update_camera()
 
@@ -1567,9 +1708,11 @@ class SatelliteTracker:
             source = f"{self.catalog.source} data"
         self.title_subtitle.SetInput(f"{self.n:,} objects  ·  {source}")
 
+        caret = "_" if int(now * 2) % 2 == 0 else " "
         if self.search_active:
-            caret = "_" if int(now * 2) % 2 == 0 else " "
             self.search_input.SetInput(f"> {self.search_query}{caret}")
+        if self.location_active:
+            self.location_input.SetInput(f"> {self.location_query}{caret}")
 
         layers = weather.MODES[self.weather_mode][1]
         for key, actor in self.weather_status.items():
@@ -1688,6 +1831,7 @@ class SatelliteTracker:
         self.clock_panel.layout(w / 2, h - margin, 0.5, 1)
         self.legend_panel.layout(w - margin, h - margin, 1, 1)
         self.layers_panel.layout(w - margin, self.legend_panel.box[1] - gap, 1, 1)
+        self.location_panel.layout(w - margin, self.layers_panel.box[1] - gap, 1, 1)
         self.help_panel.layout(w - margin, margin, 1, 0)
         self.toast.layout(w / 2, margin + scaled(40), 0.5, 0)
         if self.mouse is not None and self.tooltip.visible:
@@ -1722,6 +1866,8 @@ def parse_args():
                         help="don't download anything; use cached or bundled data only")
     parser.add_argument("--ui-scale", type=float, metavar="SCALE",
                         help="size of text and controls, e.g. 1.25 (default: the display scaling)")
+    parser.add_argument("--location", nargs=2, type=float, metavar=("LAT", "LON"),
+                        help="your location for pass predictions, e.g. 21.31 -157.86 (saved for next time)")
     return parser.parse_args()
 
 
@@ -1732,6 +1878,12 @@ if __name__ == "__main__":
               "(about 2 FPS). Use Python 3.13; see the README.")
     display_scale = enable_hidpi()
     set_scale(args.ui_scale or display_scale)
+    observer = location.load_location()
+    if args.location:
+        observer = location.parse_coordinates("{} {}".format(*args.location))
+        if observer is None:
+            raise SystemExit("--location: latitude must be within ±90 and longitude within ±180")
+        location.save_location(observer)
     timescale = load.timescale()
     catalog = load_catalog(timescale, args.groups, offline=args.offline)
-    SatelliteTracker(catalog, timescale, offline=args.offline).run()
+    SatelliteTracker(catalog, timescale, offline=args.offline, observer=observer).run()
